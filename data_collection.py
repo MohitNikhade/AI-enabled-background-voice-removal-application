@@ -1,146 +1,140 @@
 import os
-import requests
 import tarfile
+import requests
+import zipfile
+import librosa
+import soundfile as sf
 import logging
-from tqdm import tqdm
-from hashlib import md5
-import time
-import random
 
-logging.basicConfig(filename="data_collection.log", level=logging.INFO, 
-                    format="%(asctime)s:%(levelname)s:%(message)s")
+# Setup logging
+logging.basicConfig(filename='RealTime_Denoise_App/logs/data_collection.log', level=logging.INFO, 
+                    format='%(asctime)s %(levelname)s:%(message)s')
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATASETS_DIR = os.path.join(BASE_DIR, "datasets")
-LIBRISPEECH_DIR = os.path.join(DATASETS_DIR, "LibriSpeech")
-URBANSOUND8K_DIR = os.path.join(DATASETS_DIR, "UrbanSound8K")
+# Directory setup
+BASE_DIR = 'RealTime_Denoise_App/datasets'
+LIBRISPEECH_DIR = os.path.join(BASE_DIR, 'LibriSpeech')
+URBANSOUND_DIR = os.path.join(BASE_DIR, 'UrbanSound8K')
 
+# URLs for datasets  
 LIBRISPEECH_URLS = [
-    {
-        "url": "http://www.openslr.org/resources/12/train-clean-100.tar.gz",
-        "md5": "2f494334227864a8a8fec932999db9d8"
-    },
-    {
-        "url": "http://www.openslr.org/resources/12/dev-clean.tar.gz",
-        "md5": "42e2234ba48799c1f50f24a7926300a1"
-    }
+    "http://www.openslr.org/resources/12/train-clean-100.tar.gz",
+    "http://www.openslr.org/resources/12/dev-clean.tar.gz"
 ]
 
-URBANSOUND8K_URL = {
-    "url": "https://zenodo.org/record/1203745/files/UrbanSound8K.tar.gz?download=1",
-    "md5": "8fd0635bf5bba613bbe69ec7e1077501"
-}
+URBANSOUND8K_URL = "https://zenodo.org/record/1203745/files/UrbanSound8K.tar.gz"
 
-os.makedirs(LIBRISPEECH_DIR, exist_ok=True)
-os.makedirs(URBANSOUND8K_DIR, exist_ok=True)
+# Create directories if they don't exist
+def create_directories():
+    os.makedirs(LIBRISPEECH_DIR, exist_ok=True)
+    os.makedirs(URBANSOUND_DIR, exist_ok=True)
+    os.makedirs('logs', exist_ok=True)
 
-def check_md5(file_path, expected_md5):
-    hash_md5 = md5()
-    try:
-        with open(file_path, "rb") as file:
-            for chunk in iter(lambda: file.read(4096), b""):
-                hash_md5.update(chunk)
-        file_md5 = hash_md5.hexdigest()
-        return file_md5 == expected_md5
-    except Exception as e:
-        logging.error(f"Error computing MD5 for {file_path}: {str(e)}")
-        return False
+# Function to check if the dataset has been extracted
+def is_extracted(directory, filename):
+    extracted_flag_file = os.path.join(directory, f".{filename}.extracted")
+    return os.path.exists(extracted_flag_file)
 
-def download_file(url, destination, retries=3, sleep_time=5):
-    file_name = url.split("/")[-1]
-    logging.info(f"Starting download for: {file_name}")
-    print(f"Downloading: {file_name}...")
+# Function to mark a dataset as extracted
+def mark_as_extracted(directory, filename):
+    extracted_flag_file = os.path.join(directory, f".{filename}.extracted")
+    with open(extracted_flag_file, 'w') as f:
+        f.write('')
 
-    if os.path.exists(destination):
-        logging.info(f"{destination} already exists, verifying file integrity...")
-        print(f"{destination} already exists, skipping download.")
-        return
-    
-    for attempt in range(retries):
-        try:
+def download_librispeech():
+    for url in LIBRISPEECH_URLS:
+        filename = url.split('/')[-1]
+        filepath = os.path.join(LIBRISPEECH_DIR, filename)
+        extract_dir = os.path.join(LIBRISPEECH_DIR, filename.replace('.tar.gz', ''))
+
+        # Check if the dataset is already extracted
+        if os.path.exists(extract_dir):
+            logging.info(f"{filename} already extracted. Skipping extraction.")
+            continue
+
+        if not os.path.exists(filepath):
+            logging.info(f"Downloading {filename}...")
             response = requests.get(url, stream=True)
-            total_size = int(response.headers.get('content-length', 0))
-            block_size = 1024  # 1 Kilobyte
-            tqdm_bar = tqdm(total=total_size, unit='iB', unit_scale=True)
-            
-            with open(destination, 'wb') as file:
-                for data in response.iter_content(block_size):
-                    tqdm_bar.update(len(data))
-                    file.write(data)
-
-            logging.info(f"Downloaded {destination}")
-            print(f"Downloaded: {file_name}")
-            break
-
+            with open(filepath, 'wb') as f:
+                f.write(response.content)
+            logging.info(f"{filename} downloaded successfully.")
+        
+        # Extract files if not extracted already
+        logging.info(f"Extracting {filename}...")
+        try:
+            with tarfile.open(filepath, 'r:gz') as tar:
+                tar.extractall(LIBRISPEECH_DIR)
+            logging.info(f"{filename} extracted successfully.")
+        except PermissionError as e:
+            logging.error(f"Permission denied while extracting {filename}: {e}")
         except Exception as e:
-            logging.error(f"Error downloading {destination}, attempt {attempt + 1}/{retries}: {str(e)}")
-            if attempt < retries - 1:
-                sleep_duration = sleep_time + random.randint(1, 3)
-                logging.info(f"Retrying in {sleep_duration} seconds...")
-                print(f"Error downloading {file_name}, retrying in {sleep_duration} seconds...")
-                time.sleep(sleep_duration)
-            else:
-                logging.critical(f"Failed to download {destination} after {retries} attempts.")
-                print(f"Failed to download {file_name} after {retries} attempts.")
+            logging.error(f"Error extracting {filename}: {e}")
 
-        finally:
-            tqdm_bar.close()
-
-def extract_tar_file(tar_path, extract_to):
-    file_name = tar_path.split("/")[-1]
-    logging.info(f"Extracting: {file_name}")
-    print(f"Extracting: {file_name}...")
-
-    if os.path.isdir(extract_to):
-        logging.info(f"{extract_to} already exists, skipping extraction.")
-        print(f"Skipping extraction, {extract_to} already exists.")
-        return
-    try:
-        with tarfile.open(tar_path, 'r:gz') as tar:
-            tar.extractall(path=extract_to)
-        logging.info(f"Extracted {tar_path} to {extract_to}")
-        print(f"Extracted: {file_name}")
-    except Exception as e:
-        logging.error(f"Error extracting {tar_path}: {str(e)}")
-        print(f"Error extracting {file_name}: {str(e)}")
-
-def download_and_verify(url, destination, expected_md5):
-    file_name = url.split("/")[-1]
-    file_path = os.path.join(destination, file_name)
+# Function to download and extract UrbanSound8K dataset
+def download_urbansound8k():
+    filename = URBANSOUND8K_URL.split('/')[-1]
+    filepath = os.path.join(URBANSOUND_DIR, filename)
     
-    if os.path.exists(file_path):
-        logging.info(f"{file_path} exists, verifying MD5 checksum...")
-        print(f"{file_name} exists, verifying checksum...")
-
-        if check_md5(file_path, expected_md5):
-            logging.info(f"{file_path} passed integrity check, skipping download.")
-            print(f"{file_name} passed integrity check, skipping download.")
-            return file_path
-        else:
-            logging.warning(f"{file_path} failed MD5 check, re-downloading.")
-            print(f"{file_name} failed checksum, re-downloading.")
-            os.remove(file_path)
+    if not os.path.exists(filepath):
+        logging.info(f"Downloading UrbanSound8K dataset...")
+        response = requests.get(URBANSOUND8K_URL, stream=True)
+        with open(filepath, 'wb') as f:
+            f.write(response.content)
+        logging.info(f"UrbanSound8K dataset downloaded successfully.")
     
-    download_file(url, file_path)
-    
-    if check_md5(file_path, expected_md5):
-        logging.info(f"{file_path} passed MD5 verification.")
-        print(f"{file_name} passed checksum verification.")
+    # Check if the dataset is already extracted
+    if not is_extracted(URBANSOUND_DIR, filename):
+        # Extract files
+        logging.info(f"Extracting UrbanSound8K dataset...")
+        with tarfile.open(filepath, 'r:gz') as tar:
+            tar.extractall(URBANSOUND_DIR)
+        mark_as_extracted(URBANSOUND_DIR, filename)
+        logging.info(f"UrbanSound8K dataset extracted successfully.")
     else:
-        logging.critical(f"{file_path} failed MD5 verification, corrupt file.")
-        print(f"{file_name} failed checksum verification, file is corrupt.")
-        raise Exception(f"MD5 checksum mismatch for {file_path}.")
-    
-    return file_path
+        logging.info("UrbanSound8K dataset already extracted. Skipping extraction.")
 
-for item in LIBRISPEECH_URLS:
-    url = item["url"]
-    expected_md5 = item["md5"]
-    file_path = download_and_verify(url, LIBRISPEECH_DIR, expected_md5)
-    extract_tar_file(file_path, LIBRISPEECH_DIR)
+# Convert audio files to 16kHz WAV
+def convert_to_16k_wav(input_dir, output_dir):
+    for root, _, files in os.walk(input_dir):
+        for file in files:
+            if file.endswith('.flac') or file.endswith('.wav'):
+                input_path = os.path.join(root, file)
+                # Ensure .wav output even for .flac files
+                output_filename = file.replace('.flac', '.wav')
+                output_path = os.path.join(output_dir, os.path.relpath(root, input_dir), output_filename)
+                
+                # Create the output directory if it doesn't exist
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-urban_sound_file_path = download_and_verify(URBANSOUND8K_URL["url"], URBANSOUND8K_DIR, URBANSOUND8K_URL["md5"])
-extract_tar_file(urban_sound_file_path, URBANSOUND8K_DIR)
+                # Load and resample audio to 16kHz
+                try:
+                    audio, sr = librosa.load(input_path, sr=16000)
+                    sf.write(output_path, audio, 16000)
+                    logging.info(f"Successfully converted {input_path} to {output_path}")
+                except Exception as e:
+                    logging.error(f"Error processing {input_path}: {e}")
 
-logging.info("Data collection and extraction completed successfully.")
-print("Data collection and extraction completed successfully.")
+# Function to process LibriSpeech and UrbanSound8K datasets
+def process_datasets():
+    # Convert LibriSpeech to 16kHz WAV
+    logging.info("Processing LibriSpeech dataset...")
+    for dataset in ['train-clean-100', 'dev-clean']:
+        input_dir = os.path.join(LIBRISPEECH_DIR, dataset)
+        output_dir = os.path.join(LIBRISPEECH_DIR, dataset)
+        convert_to_16k_wav(input_dir, output_dir)
+
+    # Convert UrbanSound8K to 16kHz WAV
+    logging.info("Processing UrbanSound8K dataset...")
+    input_dir = os.path.join(URBANSOUND_DIR, 'UrbanSound8K', 'audio')
+    output_dir = os.path.join(URBANSOUND_DIR, 'audio')
+    convert_to_16k_wav(input_dir, output_dir)
+
+# Main function to coordinate the process
+def main():
+    create_directories()
+    download_librispeech()
+    download_urbansound8k()
+    process_datasets()
+    logging.info("Data collection and processing completed successfully.")
+
+if __name__ == '__main__':
+    main()
