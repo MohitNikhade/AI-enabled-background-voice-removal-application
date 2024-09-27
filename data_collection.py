@@ -39,8 +39,22 @@ def mark_as_extracted(directory, filename):
     with open(extracted_flag_file, 'w') as f:
         f.write('')
 
+# Function to check if all .flac files have corresponding .wav files
+def check_flac_wav_conversion(directory):
+    all_converted = True
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if file.endswith('.flac'):
+                flac_path = os.path.join(root, file)
+                wav_path = flac_path.replace('.flac', '.wav')
+                if not os.path.exists(wav_path):
+                    all_converted = False
+                    print(f"Missing WAV file for {flac_path}")
+                    logging.warning(f"Missing WAV file for {flac_path}")
+    return all_converted
+
 # Function to delete all .flac files if corresponding .wav files exist
-def delete_flac_files_after_conversion(directory):
+def delete_flac_files(directory):
     for root, _, files in os.walk(directory):
         for file in files:
             if file.endswith('.flac'):
@@ -64,9 +78,12 @@ def download_librispeech():
 
         # Check if the dataset is already extracted
         if os.path.exists(extract_dir) and is_extracted(LIBRISPEECH_DIR, filename):
-            print(f"{filename} already extracted. Skipping download and extraction.")
-            logging.info(f"{filename} already extracted. Skipping extraction.")
-            delete_flac_files_after_conversion(extract_dir)
+            print(f"{filename} already extracted. Checking for .flac to .wav conversions.")
+            logging.info(f"{filename} already extracted. Checking for .flac to .wav conversions.")
+            
+            # Check if all .flac files have been converted to .wav
+            if check_flac_wav_conversion(extract_dir):
+                delete_flac_files(extract_dir)
             continue
 
         # Download the dataset
